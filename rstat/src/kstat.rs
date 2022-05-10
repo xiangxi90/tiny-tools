@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display};
 
 use libc::lstat;
 pub use libc::{stat,statfs};
@@ -139,7 +139,7 @@ impl OptionSelected{
         let mut filestats:Vec<FileStat> = Vec::new();
 
         // 如果同时需要简化输出和格式化输出,我们选择直接返回错误,即不允许这种错误
-        if self.bterse==true&&self.bfilter==true{
+        if self.bterse&&self.bfilter{
             return Err(StatError::WrongOption);
         }
 
@@ -150,10 +150,10 @@ impl OptionSelected{
         
         // 遍历所有文件,并按照选项拿出我们需要的信息
         for iter in self.files.iter(){     
-            if self.bfilesystem==true{
+            if self.bfilesystem{
                 filestats.push(get_file_statfs(iter.clone()));
             }
-            else if self.blink==true{
+            else if self.blink{
                 filestats.push(get_file_stat_link(iter.clone()));
             }
             else{
@@ -162,7 +162,8 @@ impl OptionSelected{
         }
 
         //根据选项中的值来选择合适的输出方式
-        if self.bterse==true{
+        //由于我们限制了不能同时出现-c和-t，故而这两者之间可以理解为直接不可能同时出现
+        if self.bterse{
             if self.bfilesystem{
                 OptionSelected::output_with_terse_filesystem(filestats);
             }
@@ -170,27 +171,137 @@ impl OptionSelected{
                 OptionSelected::output_with_terse_file(filestats);
             }
         }
-        else if self.bfilter==true{
-            OptionSelected::output_with_fileter(self.output_inf.clone(),filestats);
+        else if self.bfilter{
+            if self.bfilesystem{
+                OptionSelected::output_with_fileter_filesystem(&self.output_inf,&filestats);
+            }
+            else{
+                OptionSelected::output_with_fileter_file(&self.output_inf,&filestats);
+            }
         }
         else {
             if self.bfilesystem{
-                OptionSelected::output_normal_filesystem(filestats,&dt);
+                OptionSelected::output_normal_filesystem(filestats);
             }
             else{
                 OptionSelected::output_normal_file(filestats,&dt);
             }
         }
+
+        if self.bmhelper{
+            output_more_help();
+        }
         Ok(())
     }
 
-    pub fn output_with_fileter(command : String , filestat : Vec<FileStat>){
-        println!("{}:",command);
+    //其实作为这些输出代码来说，这些功能其实完全可以写到一个代码里，但为了方便就算了，反正ctrl c/v 的事
+    //这里就把每一种的文件系统和另外一个分开了，本来来说完全不必
+    #[inline]
+    pub fn output_with_fileter_file(command : &str , filestat : &Vec<FileStat>){
+    //    println!("{}:",command);
+    //  按理来讲这里其实应该把解析分开，然后将其拆分后在进行输出，但是这次由于不是着重于这个功能，就每次都解析一次吧
         for iter in filestat{
-            print!("{}   ",iter.filename);
+            let mut bflag : bool = false;
+            for ch in command.chars(){
+                if ch=='%'{
+                    if bflag{
+                        print!("%");
+                    }
+                    bflag = true;
+                }
+                else{
+                    let filestat = &iter.stat;
+                    if bflag{
+                        match ch{
+                            'a' => {print!("{}",FilePermission::new(filestat.st_mode).output_num());},
+                            'A' => {print!("{}",FilePermission::new(filestat.st_mode).output_char());},
+                            'b' => {print!("{}",filestat.st_blocks);},
+                            'B' => {print!("{}",filestat.st_blksize/filestat.st_blocks);},
+                            'C' => {print!("rstat: failed to get security context of 'dfs.sh': No data available \n?",);},//这里因为没找到对应的接口，先暂缓
+                            'd' => {print!("{}",filestat.st_dev);},
+                            'D' => {print!("{:x}",filestat.st_dev);},
+                            'f' => {print!("{:x}",filestat.st_mode)},
+                            'F' => {print!("{}",FileType::get_file_type(filestat.st_mode));},
+                            'g' => {print!("{}",filestat.st_gid);},
+                            'G' => {print!("{}",get_groupname_with_id(filestat.st_gid));},
+                            'h' => {print!("{}",filestat.st_nlink);},
+                            'i' => {print!("{}",filestat.st_ino)},
+                            'm' => {print!("/");},//这里的功能没有实际完成，思路是读取/proc/mounts进行比对，有的话就输出相应的，否则就是'/'
+                            'n' => {print!("{}",iter.filename)},
+                            'N' => {
+                                if iter.blinker{
+                                    print!("'{}' -> '{}'",iter.filename,iter.oriname);
+                                }
+                                else{
+                                    print!("'{}'",iter.filename);
+                                }
+                            },
+                            'o' => {print!("{}",filestat.st_blksize);},
+                            's' => {print!("{}",filestat.st_size)},
+                            't' => {print!("!t!");},//未完成
+                            'T' => {print!("!T!");},
+                            'u' => {print!("{}",filestat.st_uid);},
+                            'U' => {print!("{}",get_username_with_id(filestat.st_uid));},
+                            'w' => {print!("-");},
+                            'W' => {print!("-");},
+                            'x' => {print!("{}",get_time_utc2local(filestat.st_atime, filestat.st_atime_nsec));},
+                            'X' => {print!("{}",filestat.st_atime_nsec);},
+                            'y' => {print!("{}",get_time_utc2local(filestat.st_atime, filestat.st_mtime_nsec));},
+                            'Y' => {print!("{}",filestat.st_mtime);},
+                            'z' => {print!("{}",get_time_utc2local(filestat.st_atime, filestat.st_ctime_nsec));},
+                            'Z' => {print!("{}",filestat.st_ctime);},
+                            _   => {print!("{}",ch);},
+                        };
+                    }
+                    else{
+                        print!("{}",ch);
+                    }
+                    bflag = false;
+                }
+            }
         }print!("\n");
     }
 
+    #[inline]
+    pub fn output_with_fileter_filesystem(command : &str , filestat : &Vec<FileStat>){
+        println!("{}:",command);
+        for iter in filestat{
+            let mut bflag :bool = false;
+            for ch in command.chars(){
+                if ch=='%'{
+                    if bflag{
+                        print!("%");
+                    }
+                    bflag = true;
+                }
+                else{
+                    let filestat = &iter.statfs;
+                    if bflag{
+                        match ch{
+                            'a' => {print!("{}",filestat.f_bavail);},
+                            'b' => {print!("{}",filestat.f_blocks);},
+                            'c' => {print!("{}",filestat.f_files);},
+                            'd' => {print!("{}",filestat.f_ffree);},
+                            'f' => {print!("{}",filestat.f_bfree)},
+                            'i' => {print!("{:x}",431254)},//老问题，暂时还没找到提取出来的方法
+                            'n' => {print!("{}",iter.filename)},
+                            's' => {print!("{}",filestat.f_bsize)},//这里可能搞反了
+                            'S' => {print!("{}",filestat.f_frsize)},
+                            't' => {print!("{:x}",filestat.f_type);},
+                            'T' => {print!("{}",filestat.f_type);},
+                            _   => {print!("{}",ch);},
+                        };
+                    }
+                    else{
+                        print!("{}",ch);
+                    }
+                    bflag = false;
+                }
+            }
+        }print!("\n");
+    }
+
+    #[inline]
     pub fn output_with_terse_file(filestat: Vec<FileStat>){
         for iter in filestat{
             if iter.alive{
@@ -211,6 +322,7 @@ impl OptionSelected{
         }
     }
 
+    #[inline]
     pub fn output_with_terse_filesystem(filestat: Vec<FileStat>){
         for iter in filestat{
             if iter.alive{
@@ -229,8 +341,9 @@ impl OptionSelected{
         }
     }
 
+    #[inline]
     pub fn output_normal_file(filestat: Vec<FileStat> , offset : &str){
-        println!("{}:","normal  file");
+    //    println!("{}:","normal  file");
         for iter in filestat{
             if !iter.alive{
                 println!("stat: cannot stat '{}': {}",iter.filename,iter.err_info);
@@ -258,19 +371,34 @@ impl OptionSelected{
                 filestat.st_gid,get_groupname_with_id(filestat.st_gid)
             );
 
-            println!("Access: {} {}\nModify: {} {}\nChange: {} {}\nBirth: -",
-                    get_time_utc2local(filestat.st_atime, filestat.st_atime_nsec),offset,
-                    get_time_utc2local(filestat.st_mtime, filestat.st_mtime_nsec),offset,
-                    get_time_utc2local(filestat.st_ctime, filestat.st_ctime_nsec),offset,
+            println!("Access: {}.{} {}\nModify: {}.{} {}\nChange: {}.{} {}\nBirth: -",
+                    get_time_utc2local(filestat.st_atime, filestat.st_atime_nsec),filestat.st_atime_nsec,offset,
+                    get_time_utc2local(filestat.st_mtime, filestat.st_mtime_nsec),filestat.st_mtime_nsec,offset,
+                    get_time_utc2local(filestat.st_ctime, filestat.st_ctime_nsec),filestat.st_ctime_nsec,offset,
                 );
 
         }print!("\n");
     }
 
-    pub fn output_normal_filesystem(filestat: Vec<FileStat> , offset : &str){
-        println!("{}:{}","normal  filesys",offset);
-        for _iter in filestat{
-            
+    #[inline]
+    pub fn output_normal_filesystem(filestat: Vec<FileStat>){
+    //    println!("{}:{}","normal  filesys",offset);
+        for iter in filestat{
+            if !iter.alive{
+                println!("stat: cannot stat '{}': {}",iter.filename,iter.err_info);
+                continue;
+            }
+            let filestat =&iter.statfs;
+
+            println!("  File: \"{}\"",iter.filename);
+            println!("    ID: {:x} Namelen: {:<8}Type: {}/{}",
+                    0xfedc9aa3bd65bc57 as i128,filestat.f_namelen,"ext2","ext3");
+            //statfs中数据就随便写了，这里的数据还要翻文档去解析，太麻烦了就不做了，主要是不是很重要的东西,这里我就先按我这边的输出了
+            println!("Block size: {:<11}Fundamental block size: {}",filestat.f_frsize,filestat.f_bsize);
+            println!("Blocks: Total: {:<11}Free: {:<11}Available: {}",
+                    filestat.f_blocks,filestat.f_bfree,filestat.f_bavail);
+            println!("Inodes: Total: {:<11}Free: {}",filestat.f_files,filestat.f_ffree);
+
         }print!("\n");
     }
 }
@@ -367,6 +495,8 @@ fn get_file_statfs(filename : String) ->FileStat{
     }
 }
 
+
+
 fn get_link_oriname(linkname: String) -> String{
     unsafe{
         let mut namebuf : [i8; 50] = [0;50];
@@ -380,6 +510,7 @@ fn get_link_oriname(linkname: String) -> String{
         return linkname;
     }
 }
+
 
 // fn get_pwd_win() -> String{
 //     let cwd=std::env::current_dir().unwrap();
@@ -434,7 +565,7 @@ pub fn get_dev_minor(devno: u64) -> u32{
 /// #define	__S_IWRITE	0200	 Write by owner.  
 /// #define	__S_IEXEC	0100	 Execute by owner.  
 /// 
-
+#[allow(non_camel_case_types)]
 type mode_t = u32;
 pub const S_IFIFO: mode_t = 4096;
 pub const S_IFCHR: mode_t = 8192;
@@ -653,4 +784,56 @@ pub fn get_time_utc2local(tc: i64, tn: i64) -> String{
     let da : DateTime<Utc> = DateTime::from_utc(NaiveDateTime::from_timestamp(tc, tn.try_into().unwrap()), Utc);
     let lc : DateTime<Local> = DateTime::from(da);
     lc.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+#[inline]
+pub fn output_more_help(){
+    println!("The helper for format mode ------ or you can just use 'rstat --help'
+The valid format sequences for files (without --file-system):
+
+    %a   access rights in octal (note '#' and '0' printf flags)
+    %A   access rights in human readable form
+    %b   number of blocks allocated (see %B)
+    %B   the size in bytes of each block reported by %b
+    %C   SELinux security context string
+    %d   device number in decimal
+    %D   device number in hex
+    %f   raw mode in hex
+    %F   file type
+    %g   group ID of owner
+    %G   group name of owner
+    %h   number of hard links
+    %i   inode number
+    %m   mount point
+    %n   file name
+    %N   quoted file name with dereference if symbolic link
+    %o   optimal I/O transfer size hint
+    %s   total size, in bytes
+    %t   major device type in hex, for character/block device special files
+    %T   minor device type in hex, for character/block device special files
+    %u   user ID of owner
+    %U   user name of owner
+    %w   time of file birth, human-readable; - if unknown
+    %W   time of file birth, seconds since Epoch; 0 if unknown
+    %x   time of last access, human-readable
+    %X   time of last access, seconds since Epoch
+    %y   time of last data modification, human-readable
+    %Y   time of last data modification, seconds since Epoch
+    %z   time of last status change, human-readable
+    %Z   time of last status change, seconds since Epoch
+  
+  Valid format sequences for file systems:
+  
+    %a   free blocks available to non-superuser
+    %b   total data blocks in file system
+    %c   total file nodes in file system
+    %d   free file nodes in file system
+    %f   free blocks in file system
+    %i   file system ID in hex
+    %l   maximum length of filenames
+    %n   file name
+    %s   block size (for faster transfers)
+    %S   fundamental block size (for block counts)
+    %t   file system type in hex
+    %T   file system type in human readable form");
 }
